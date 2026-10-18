@@ -21,6 +21,7 @@ from aiohttp import web
 
 from config.logger import setup_logging
 from config.config_loader import get_project_dir
+from core.utils import online_registry
 
 TAG = __name__
 COOKIE_NAME = "megabot_session"
@@ -176,7 +177,12 @@ class AdminHandler:
 
     @staticmethod
     def _public(record):
-        return {k: v for k, v in record.items() if k not in SECRET_FIELDS}
+        out = {k: v for k, v in record.items() if k not in SECRET_FIELDS}
+        if "device_code" in record or "device_mac" in record:
+            out["is_online"] = online_registry.is_online(
+                record.get("device_mac"), record.get("device_code"), record.get("id")
+            )
+        return out
 
     async def _body(self, request):
         try:
@@ -257,7 +263,7 @@ class AdminHandler:
             return web.json_response([])
         devices = self._visible_devices(session)
         return web.json_response(
-            [{**self._public(d), "is_online": bool(d.get("is_online"))} for d in devices]
+            [self._public(d) for d in devices]
         )
 
     async def change_password(self, request):
@@ -416,6 +422,26 @@ class AdminHandler:
 
         return handler
 
+    async def system_status(self, request):
+        """Chẩn đoán: trả về cấu hình ASR/LLM/TTS đang dùng và API key đã đặt hay chưa (không lộ giá trị key)."""
+        cfg = self.config
+        selected = cfg.get("selected_module", {})
+
+        def has_key(module):
+            conf = cfg.get(module, {}).get(selected.get(module), {})
+            key = str(conf.get("api_key", "") or "")
+            return bool(key) and "你" not in key and "web key" not in key
+
+        return web.json_response(
+            {
+                "selected_module": selected,
+                "asr_key_set": has_key("ASR"),
+                "llm_key_set": has_key("LLM"),
+                "tts_voice": cfg.get("TTS", {}).get(selected.get("TTS"), {}).get("voice"),
+                "online_devices": online_registry.online_ids(),
+            }
+        )
+
     async def not_implemented(self, request):
         return web.json_response(
             {"error": "Chức năng này chưa được hỗ trợ ở backend", "path": request.path}, status=501
@@ -433,6 +459,7 @@ class AdminHandler:
         r.add_post("/api/auth/change-password", self.change_password)
         r.add_post("/api/admin/change-password", self.change_password)
 
+        r.add_get("/api/system/status", self.system_status)
         r.add_get("/api/devices", self.list_devices)
         r.add_post("/api/devices", self.create_device)
         r.add_get("/api/devices/{id}", self.get_device)
