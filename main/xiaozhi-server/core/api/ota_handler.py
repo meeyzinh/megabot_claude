@@ -122,7 +122,7 @@ class OTAHandler(BaseHandler):
             self.logger.bind(tag=TAG).error(f"生成MQTT密码签名失败: {e}")
             return ""
 
-    def _get_websocket_url(self, local_ip: str, port: int) -> str:
+    def _get_websocket_url(self, local_ip: str, port: int, request=None) -> str:
         """获取websocket地址
 
         Args:
@@ -135,10 +135,17 @@ class OTAHandler(BaseHandler):
         server_config = self.config["server"]
         websocket_config = server_config.get("websocket", "")
 
-        if "你的" not in websocket_config:
+        if websocket_config and "你的" not in websocket_config:
             return websocket_config
-        else:
-            return f"ws://{local_ip}:{port}/xiaozhi/v1/"
+        # Chế độ 1 cổng (Render): tự suy ra địa chỉ công khai từ Host của request OTA,
+        # nên không cần đặt PUBLIC_WS_URL
+        if request is not None and server_config.get("single_port_mode"):
+            host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+            if host:
+                proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+                scheme = "wss" if proto == "https" else "ws"
+                return f"{scheme}://{host}/xiaozhi/v1/"
+        return f"ws://{local_ip}:{port}/xiaozhi/v1/"
 
     async def handle_post(self, request):
         """处理 OTA POST 请求
@@ -290,7 +297,7 @@ class OTAHandler(BaseHandler):
                         token = self.auth.generate_token(client_id, device_id)
                 # NOTE: use websocket_port here
                 return_json["websocket"] = {
-                    "url": self._get_websocket_url(local_ip, websocket_port),
+                    "url": self._get_websocket_url(local_ip, websocket_port, request),
                     "token": token,
                 }
                 self.logger.bind(tag=TAG).info(
@@ -359,7 +366,7 @@ class OTAHandler(BaseHandler):
             local_ip = get_local_ip()
             # use websocket port for websocket URL
             websocket_port = int(server_config.get("port", 8000))
-            websocket_url = self._get_websocket_url(local_ip, websocket_port)
+            websocket_url = self._get_websocket_url(local_ip, websocket_port, request)
             message = f"OTA接口运行正常，向设备发送的websocket地址是：{websocket_url}"
             response = web.Response(text=message, content_type="text/plain")
         except Exception as e:
